@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+corpus*.txt
+results*.json
+run*.log
+malecns_v1/
+*.feather
+*.arrow
