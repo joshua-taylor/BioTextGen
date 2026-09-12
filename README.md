@@ -1,194 +1,160 @@
-# flybrain — a connectome-to-text-model test harness
+# BioTextGen — bio-inspired sequence mixer benchmark
 
-Tests whether fly connectome structure is useful for next-token prediction, and
-separates "useful" from "explained by its own statistics".
+Compares bio-inspired sequence mixers against standard baselines on a
+WikiText-103 subset. Scores **train perplexity**, **validation perplexity**
+and **tokens/sec**.
 
-**The connectome itself could not be downloaded here** — it lives on a Google
-Cloud bucket the sandbox proxy blocks (`host_not_allowed`), and the edge file is
-1.05 GB. What *was* recovered: the verified file schema, the release node policy,
-source URLs with SHA-256 digests, and a real per-neuron activity vector over all
-166,700 MaleCNS neurons. The graph code is validated against a synthetic
-fly-like stand-in; the real-data path is `--malecns <dir>`.
-
----
-
-## The question, stated so it can fail
-
-Not "can a connectome-constrained network learn text?" — it can, any sparse
-random graph can. The question is:
-
-> Does the **specific wiring** beat a random graph with the **same statistics**?
-
-If it doesn't, the transferable finding is the statistics (degree distribution,
-E/I ratio, sparsity, expansion ratio), and you should generate architectures
-from those rather than copying 166,000 neurons.
-
-## Pre-registered kill criteria
-
-| # | Claim | Criterion | Fires if |
-|---|-------|-----------|----------|
-| 1 | Wiring carries information beyond claw counts | `mb_connectome` beats `mb_degree_null` by ≥0.02 bits/char, paired, 95% CI excluding 0, ≥5 seeds | not met → **wiring is not the asset; statistics are** |
-| 2 | Sparse expansion helps at all | `mb_connectome` beats `no_expansion` by ≥0.01 bits/char | not met → the whole MB motif is dead for this task |
-
-Criterion 2 is **expansion-ratio dependent** — measured, not assumed. At
-`n_kc=2000` (5% active → 100 effective dims vs 200 PNs) expansion wins by 0.125
-bits/char. At `n_kc=600` (30 effective dims) it *loses* by 0.108. Sweep `n_kc`
-before reading anything into a single setting.
-
-A structural property counts as real only if `|z| > 2` **and** the effect is
->20% of the null mean. A z of 300 on a 0.5% difference is a tight null, not a
-finding — `run_all.py` enforces both.
-
----
-
-## Quick start
+The headline candidate is a **pattern-separated episodic memory**: addresses
+from a frozen random sparse expansion plus winner-take-all, writes by a
+cerebellar delta rule touching only the active rows, reads by inverted-index
+lookup, and four compartments competing so the longest matching context wins.
 
 ```bash
 pip install -r requirements.txt
-python make_corpus.py              # builds corpus.txt (WikiText if reachable)
-python run_all.py --seeds 5        # synthetic stand-in; validates the harness
+python tests.py                       # correctness — run this first
+python bench.py --arms sliding_only,full_attention,gla,deltanet,psm
 ```
 
-## Layout
+---
 
-| file | what it does |
-|---|---|
-| `connectome.py` | `Connectome` container, neuPrint CSV loader, synthetic fly-like generator, MB bipartite extractor |
-| `nulls.py` | five matched-statistics nulls, each stripping one property |
-| `motifs.py` | structural census: reciprocity, modularity, 16-class directed triad census, spectral radius, effective rank — all as z-scores vs nulls |
-| `mb_probe.py` | mushroom-body sparse-expansion probe on char-level text, closed-form ridge readout, no backprop |
-| `make_corpus.py` | builds `corpus.txt` from WikiText / Kaggle inputs / local fallback |
-| `run_all.py` | orchestration + verdict |
+## The one thing this benchmark is designed to get right
 
-## Nulls — what each one isolates
+It is very easy to build a harness that compares *implementation quality* and
+call it a comparison of *mechanisms*. Attention gets a fused CUDA kernel; your
+new idea gets a Python loop; your idea loses; you learn nothing. Six controls
+guard against that.
 
-| null | preserves | a win against it means |
+**1. One trunk, one slot.** Every arm is the same 12-block model with the same
+embedding, RMSNorms, SwiGLU FFNs, depth, width, tied unembedding and init
+seed. Blocks 3, 6, 9 and 12 are the *memory slot*; only the mixer in those
+four blocks changes. The other eight blocks are always sliding-window
+attention (window 64). The `sliding_only` arm fills the memory slot with
+another sliding-window block, making it a genuine "no long-range mechanism"
+control rather than a different architecture.
+
+**2. Shared implementations.** The two attention arms are one class differing
+only in the mask; both use `scaled_dot_product_attention`. GLA and DeltaNet
+are *literally the same function* with one boolean flag — neither can be
+advantaged by better code. `tests.py` verifies both against a naive
+token-by-token reference (max abs error ~1e-6).
+
+**3. Parameter parity.** Non-embedding parameter counts are held within 5%
+across arms and printed for every run; a wider gap is flagged loudly in the
+results table. Current spread is 2.8%.
+
+**4. Identical data and schedule.** Same token stream, same batch order (same
+`Batcher` seed), same optimiser, LR, warmup, cosine schedule, gradient
+clipping, precision and step count. Evaluation uses deterministic
+non-overlapping sequential windows, not random samples.
+
+**5. Timing hygiene.** Throughput excludes the first 20 steps (allocator and
+autotuner noise) and synchronises CUDA around every measured region. Training
+and inference throughput are reported separately.
+
+**6. Thermal-drift control.** Arm execution order is shuffled per seed, so a
+GPU that slows down as it heats cannot systematically favour whichever arm
+happened to run first.
+
+### What is still not a fair comparison
+
+Tokens/sec is genuinely implementation-dependent and always will be. Attention
+runs on a fused kernel that has had years of engineering; the memory mixer
+runs on `index_select`/`index_add_`. **Read perplexity as the mechanism
+comparison and throughput as a statement about today's kernels.** A mechanism
+that wins on perplexity and loses 40% on throughput is a kernel problem, not a
+research failure. A mechanism that loses on perplexity is a research failure
+regardless of throughput.
+
+---
+
+## Arms
+
+| Arm | Memory slot contains | Role |
 |---|---|---|
-| `weight_shuffle` | topology | synapse counts are placed informatively |
-| `sign_shuffle` | wiring | E/I identity is placed informatively |
-| `degree_preserving` | exact in/out degree sequence | **topology beats its own degree sequence** (the one that matters) |
-| `configuration` | degrees in expectation | weaker version of the above |
-| `erdos_renyi` | density only | anything at all is structured |
-
-## The probe
-
-```
-context (8 chars, one-hot)
-  → AL   fixed random projection to 200 "PNs" + divisive normalisation
-  → KC   sparse mask, ~6 claws per KC, 2000 KCs
-  → APL  winner-take-all, top 5% active
-  → MBON ridge regression to next-char logits   (closed form, no gradients)
-```
-
-Conditions, each differing from the reference by exactly one thing:
-`mb_connectome`, `mb_degree_null`, `mb_dense_proj`, `mb_no_wta`, `no_expansion`.
-
-Readout is ridge + a 1-D temperature calibration on validation, so bits/char is
-a real probability score rather than a regression residual.
+| `sliding_only` | sliding-window attention (64) | Floor: no long-range mechanism |
+| `full_attention` | full causal attention | Ceiling |
+| `gla` | gated linear attention | Linear-attention rung |
+| `deltanet` | gated delta rule | **The rung that matters.** Any new mixer must beat this, not vanilla linear attention |
+| `psm_single` | pattern-separated memory, one compartment | Isolates addressing from compartments |
+| `psm` | pattern-separated memory, compartments (1,2,4,8) | The candidate |
+| `psm_depression` | `psm` + short-term synaptic depression | Ablation |
+| `psm_modulators` | `psm` + neuromodulatory channels | Ablation |
+| `psm_full` | `psm` + both | Combined |
 
 ---
 
-## Loading MaleCNS v1.0
+## The candidate mechanism
 
-The connectome is **not** vendored in any repo — it is three files on a Google
-Cloud bucket totalling ~1.1 GB. URLs and SHA-256 digests are in
-`malecns_source.lock.json`. On a machine with network:
+Per compartment *n*, at each token:
 
-```bash
-mkdir -p malecns_v1 && cd malecns_v1
-B=https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome
-curl -O $B/body-annotations-male-cns-v1.0-minconf-0.5.feather
-curl -O $B/body-neurotransmitters-male-cns-v1.0.feather
-curl -O $B/connectome-weights-male-cns-v1.0-minconf-0.5.feather
-# rename to annotations.feather / neurotransmitters.feather / edges.feather
-```
+1. **Address.** Project the last *n* hidden states (causal depthwise conv, then
+   linear) to `d_a=256`. Expand through two **frozen** random half-codebooks in
+   product form and take the top `k=32` of the Cartesian product. Nothing in
+   the expansion is learned — that is the pattern-separation claim, and it is
+   why no auxiliary anti-collapse loss is needed.
+2. **Read.** Gather the `k` addressed rows, weight by address values, divide by
+   accumulated row usage (divisive normalisation).
+3. **Write.** Delta rule: `err = v - read`, scattered back into the same `k`
+   rows, scaled by a write rate gated on surprise (previous-token NLL).
+4. **Compete.** Compartments are mixed by softmax over match strength plus a
+   learned priority bias — a differentiable longest-prefix match.
 
-Then:
+Memory operates at chunk granularity (64 tokens): reads use the state as of
+the chunk start, writes land at the chunk end. **This is a design choice, not
+a shortcut.** Intra-chunk mixing under 64 tokens is the sliding window's job
+in the hybrid layout; letting the memory duplicate it contradicts the
+labour-division finding that retrieval and local mixing should not compete.
 
-```bash
-python run_all.py --malecns malecns_v1 --seeds 5
-```
+Why it should beat DeltaNet, stated against the measured deficit:
 
-`load_malecns_feather` verifies sizes and SHA-256 against the lock before
-reading, streams the 1.05 GB edge file batch-by-batch from a memory map, and
-filters to the central brain by **superclass** — the release's own annotation —
-rather than by guessing at neuropil strings.
-
-### Schema (verified, not guessed)
-
-| file | columns used |
+| Deficit component | Mechanism |
 |---|---|
-| `annotations.feather` | `bodyId`, `superclass`, `status`, `type`, `somaSide` |
-| `neurotransmitters.feather` | `body`, `consensus_nt` |
-| `edges.feather` | `body_pre`, `body_post`, `weight` (Arrow IPC record batches) |
-
-Node policy: retain every row with a non-empty `superclass` — 166,700 of 211,577
-annotation rows — sorted by `bodyId`. `keep_central_brain=True` then drops the
-optic lobes (89,403 `ol_intrinsic` + 6,098 `ol_sensory`) and the entire VNC,
-leaving roughly 50k neurons.
-
-**Sign convention.** GABA, glutamate **and histamine** are inhibitory; ACh and
-everything else excitatory. Histamine matters — 7,891 MaleCNS neurons are
-histaminergic and an earlier version of this loader had them as excitatory.
-Modulators (dopamine 392, octopamine 101, serotonin 48) are signed 0 here; they
-should be gated rather than summed once you move to a three-factor rule.
-
-Release NT counts, for sanity-checking your load: acetylcholine 103,720 ·
-glutamate 29,302 · gaba 22,069 · histamine 7,891 · unclear 2,999 ·
-dopamine 392 · missing 178 · octopamine 101 · serotonin 48.
-
-## Empirical activity calibration
-
-`malecns_probe_counts.npy` is a per-neuron activation count over all 166,700
-retained neurons, aligned to the release node ordering. It is the only real fly
-data usable offline here, and it settles a parameter the probe would otherwise
-guess:
-
-```
-active fraction            5.15%
-top 1% of neurons carry    37% of all activity
-mean count (active only)   303
-```
-
-5.15% is strikingly close to the textbook ~5% Kenyon cell sparsity, so the APL
-winner-take-all setting in `mb_probe.py` is empirically anchored rather than
-assumed. `python calibrate.py` prints the stats; `calibrate.by_superclass`
-splits them once you have the annotations loaded.
-
-The heavy tail is the more interesting number. A third of all activity sits in
-1% of neurons — that is a hub structure your synthetic architectures should
-reproduce, and it is testable against the degree-preserving null.
-
-## Scaling notes
-
-Developed on 1 CPU / 3 GB. `degree_preserving` is a Python swap loop at
-~10 swaps/edge; on the real central brain (several million edges) drop to
-`n_swaps_per_edge=3` or move it to `igraph.rewire`. The probe is dominated by a
-`n_kc × n_kc` Gram solve — fine to 8k KCs on CPU, above that use your T4.
-
-## What to run next, in order
-
-1. Structural census on the real central brain. Read off which properties
-   survive the degree-preserving null with a >20% effect. Those are your
-   architectural priors.
-2. Probe with the real CA→MB block. Expect kill criterion 1 to fire. That is a
-   publishable negative if it's clean and multi-seed.
-3. If 1 fires, regenerate synthetic graphs *matched to the surviving properties
-   only* and check they recover the same probe performance — that confirms the
-   statistics are sufficient and you can stop copying wiring.
-4. Only then move to dynamics: replace ridge with a dopamine-gated three-factor
-   local rule and see whether the topology matters more once learning is local.
+| Weighting function (~0.53 nats) | Sparse code overlap is a steep similarity by construction — no softmax, no temperature. `tests.py` measures the falloff: overlap 1.00 → 0.88 → 0.50 → 0.19 → 0.00 as input distance grows. |
+| Delta rule (~0.36 nats) | Present, and costs `k` rows instead of a `d×d` state. |
+| Range (~0.07 nats) | Per-compartment row decay plus usage normalisation. |
+| Raw values | With M=8281 rows, k=32 active, T=512, expected writes per row ≈ 2, and the delta rule overwrites rather than sums — a read returns approximately one stored raw value, not a blend. |
 
 ---
 
-## Attribution
+## Reading the output
 
-- **MaleCNS v1.0 connectome** — CC-BY-4.0. The MaleCNS collaboration: FlyEM at
-  HHMI Janelia, University of Cambridge Department of Zoology, MRC Laboratory of
-  Molecular Biology, and Google Research.
-  Release: https://male-cns.janelia.org/download/ ·
-  Paper: https://doi.org/10.1016/j.cell.2026.08.015
-- **Schema verification and derived probe counts** — adapted from DOOMFLY
-  (github.com/nftechie/doomfly), MIT licence. Their `doom/audit_data.py` is the
-  source of the node policy and column schema used here; the CC-BY terms on the
-  underlying connectome data are unaffected by that MIT licence.
+```
+arm                 train ppl    val ppl  val nats   tok/s tr  tok/s inf  non-emb par
+```
+
+Plus a `vs deltanet rung` table in nats. That difference is the number to care
+about. The pre-registered claim from the design document: **`psm` must beat
+`deltanet` by ≥0.25 nats** with the gap between `deltanet` and `full_attention`
+as the available headroom. Less than that and the design is an incremental
+variant, and should be reported as a clean negative.
+
+`psm_single` vs `psm` isolates the contribution of compartments specifically.
+If `psm_single` already captures most of the gain, the longest-match
+machinery is not earning its complexity.
+
+---
+
+## Files
+
+| File | Contents |
+|---|---|
+| `data.py` | WikiText loading, BPE training, deterministic batching |
+| `mixers.py` | All sequence mixers; shared chunked scaffold |
+| `model.py` | Shared trunk, block layout, arm construction |
+| `bench.py` | Training, evaluation, throughput, results table |
+| `tests.py` | Correctness: chunked math, causality, separation, parity |
+
+## Config
+
+Defaults: 12 blocks, `d_model=384`, 6 heads, seq 512, batch 16, BPE vocab
+8192, AdamW, lr 1e-3, cosine, 2000 steps. ~24M parameters. Tuned to fit a
+Kaggle T4; `--precision` defaults to bf16 where supported and fp16 otherwise.
+
+Memory state is `M × d_v × C` per memory block per sequence = 8281 × 128 × 4
+floats. Reduce `d_v` first if you hit VRAM limits, `m_half` second.
+
+## Data sources
+
+`data.py` tries, in order: HuggingFace `datasets` (needs internet), any
+wikitext files under `/kaggle/input`, then a file at `$BENCH_TEXT`. If all
+three fail it exits rather than silently benchmarking on something else.

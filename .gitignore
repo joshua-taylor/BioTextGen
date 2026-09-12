@@ -1,8 +1,5 @@
 __pycache__/
 *.pyc
-corpus*.txt
+cache/
 results*.json
-run*.log
-malecns_v1/
-*.feather
-*.arrow
+*.npy
