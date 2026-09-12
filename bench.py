@@ -70,7 +70,8 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
                   use_depression=depression, use_modulators=modulators).to(device)
     pr = model.param_report()
     print(f"\n=== {name} === params total {pr['total']:,} "
-          f"non-emb {pr['non_embedding']:,} memory-slot {pr['memory_slot_mixers']:,}")
+          f"non-emb {pr['non_embedding']:,} memory-slot {pr['memory_slot_mixers']:,}",
+          flush=True)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95),
                             weight_decay=0.1)
@@ -112,9 +113,14 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
             prev_nll = torch.sigmoid(z).detach()
 
         hist.append(loss.item())
-        if (step + 1) % args.log_every == 0:
-            print(f"  step {step+1:5d}/{args.steps}  loss {np.mean(hist[-args.log_every:]):.4f}"
-                  f"  {tok_train/max(t_train,1e-9):,.0f} tok/s", flush=True)
+        if (step + 1) % args.log_every == 0 or step == 0:
+            msg = (f"  step {step+1:5d}/{args.steps}  loss "
+                   f"{np.mean(hist[-args.log_every:]):.4f}")
+            if t_train > 0:
+                tps = tok_train / t_train
+                eta = (args.steps - step - 1) * y.numel() / max(tps, 1e-9)
+                msg += f"  {tps:,.0f} tok/s  eta {eta/60:.1f} min"
+            print(msg, flush=True)
 
     train_loss = evaluate(model, eb, args.eval_batches, device, amp_dtype)
     val_loss = evaluate(model, vb, args.eval_batches, device, amp_dtype)
@@ -144,7 +150,7 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
         "final_train_batch_loss": float(np.mean(hist[-50:])),
     }
     print(f"  -> train ppl {res['train_ppl']:.2f}  val ppl {res['val_ppl']:.2f}"
-          f"  {res['train_tokens_per_sec']:,.0f} tok/s train")
+          f"  {res['train_tokens_per_sec']:,.0f} tok/s train", flush=True)
     del model, opt
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -162,15 +168,21 @@ def main():
     p.add_argument("--warmup-timing", type=int, default=20)
     p.add_argument("--eval-batches", type=int, default=40)
     p.add_argument("--throughput-batches", type=int, default=20)
-    p.add_argument("--log-every", type=int, default=100)
+    p.add_argument("--log-every", type=int, default=25)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--train-chars", type=int, default=30_000_000)
     p.add_argument("--val-chars", type=int, default=1_000_000)
     p.add_argument("--vocab-size", type=int, default=8192)
     p.add_argument("--precision", default="auto", choices=["auto", "fp16", "bf16", "fp32"])
     p.add_argument("--out", default="results.json")
+    p.add_argument("--allow-cpu", action="store_true",
+                   help="run without a GPU (roughly 50x slower; for debugging only)")
     args = p.parse_args()
 
+    if not torch.cuda.is_available() and not args.allow_cpu:
+        raise SystemExit(
+            "No GPU visible. In Kaggle: Settings -> Accelerator -> GPU T4 x2 or P100, "
+            "then re-run. A full sweep on CPU takes days. Pass --allow-cpu to override.")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.precision == "auto":
         if device.type != "cuda":
@@ -182,7 +194,7 @@ def main():
     else:
         amp = {"fp16": torch.float16, "bf16": torch.bfloat16,
                "fp32": None}[args.precision]
-    print(f"device {device}  precision {amp}")
+    print(f"device {device}  precision {amp}", flush=True)
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
@@ -196,7 +208,7 @@ def main():
             raise SystemExit(f"unknown arm {n}; choose from {list(ARMS)}")
     order = list(names)
     random.Random(args.seed).shuffle(order)             # thermal-drift control
-    print(f"\n[arms] {len(order)} arms, run order {order}")
+    print(f"\n[arms] {len(order)} arms, run order {order}", flush=True)
 
     results = []
     for n in order:

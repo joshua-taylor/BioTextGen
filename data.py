@@ -63,10 +63,11 @@ def raw_text(n_train_chars, n_val_chars):
                      ("BENCH_TEXT", _from_local)]:
         try:
             tr, va = fn(n_train_chars, n_val_chars)
-            print(f"  corpus from {name}: {len(tr):,} train chars, {len(va):,} val chars")
+            print(f"  corpus from {name}: {len(tr):,} train chars, "
+                  f"{len(va):,} val chars", flush=True)
             return tr, va
         except Exception as e:
-            print(f"  {name}: unavailable ({type(e).__name__}: {e})")
+            print(f"  {name}: unavailable ({type(e).__name__}: {e})", flush=True)
     raise SystemExit(
         "No WikiText source. Enable internet, or attach a wikitext dataset "
         "to the Kaggle notebook."
@@ -102,14 +103,16 @@ def get_data(n_train_chars=30_000_000, n_val_chars=1_000_000, vocab_size=8192):
               f"{meta['n_val']:,} val tokens, vocab {meta['vocab_size']}")
         return np.load(tr_p), np.load(va_p), meta["vocab_size"]
 
+    print("  no cache; fetching corpus (this can take a few minutes)", flush=True)
     train_txt, val_txt = raw_text(n_train_chars, n_val_chars)
+    print("  training tokenizer...", flush=True)
 
     try:
         tok_p = CACHE / f"bpe-{key}.json"
         tok = _train_bpe(train_txt, vocab_size, tok_p)
         enc = lambda s: np.array(tok.encode(s).ids, np.int32)
         V = tok.get_vocab_size()
-        print(f"  trained byte-level BPE, vocab {V}")
+        print(f"  trained byte-level BPE, vocab {V}", flush=True)
     except Exception as e:
         print(f"  tokenizers unavailable ({type(e).__name__}); falling back to bytes")
         enc = lambda s: np.frombuffer(s.encode("utf8"), np.uint8).astype(np.int32)
@@ -124,7 +127,7 @@ def get_data(n_train_chars=30_000_000, n_val_chars=1_000_000, vocab_size=8192):
     np.save(tr_p, tr); np.save(va_p, va)
     meta_p.write_text(json.dumps(
         {"n_train": int(len(tr)), "n_val": int(len(va)), "vocab_size": int(V)}))
-    print(f"  tokenised: {len(tr):,} train, {len(va):,} val, vocab {V}")
+    print(f"  tokenised: {len(tr):,} train, {len(va):,} val, vocab {V}", flush=True)
     return tr, va, V
 
 

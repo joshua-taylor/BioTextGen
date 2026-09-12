@@ -15,6 +15,16 @@ python tests.py                       # correctness — run this first
 python bench.py --arms sliding_only,full_attention,gla,deltanet,psm
 ```
 
+**Run it with unbuffered, streaming output.** `bench.py` logs every 25 steps
+with a live ETA; if you wrap it in something that captures stdout you will see
+nothing until the whole sweep finishes. Use `python -u`, and if you are
+driving it from Python use `subprocess.Popen` with line-by-line reads, not
+`subprocess.run(capture_output=True)`.
+
+`bench.py` refuses to start without a GPU unless you pass `--allow-cpu`. A
+full sweep on CPU takes days; the guard exists so a notebook with the
+accelerator switched off fails in one second instead of overnight.
+
 ---
 
 ## The one thing this benchmark is designed to get right
