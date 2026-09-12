@@ -39,11 +39,17 @@ class RMSNorm(nn.Module):
         return self.w * x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
 
+_ROPE = {}
+
+
 def rope_cache(T, hd, device, dtype, base=10000.0):
-    inv = 1.0 / (base ** (torch.arange(0, hd, 2, device=device).float() / hd))
-    t = torch.arange(T, device=device).float()
-    f = torch.outer(t, inv)
-    return torch.cos(f).to(dtype), torch.sin(f).to(dtype)
+    """Cached: rebuilding this per layer per step was pure overhead."""
+    key = (T, hd, str(device), dtype)
+    if key not in _ROPE:
+        inv = 1.0 / (base ** (torch.arange(0, hd, 2, device=device).float() / hd))
+        f = torch.outer(torch.arange(T, device=device).float(), inv)
+        _ROPE[key] = (torch.cos(f).to(dtype), torch.sin(f).to(dtype))
+    return _ROPE[key]
 
 
 def apply_rope(x, cos, sin):
@@ -80,7 +86,13 @@ class Attention(nn.Module):
         q, k, v = [t.view(B, T, self.h, self.hd).transpose(1, 2) for t in (q, k, v)]
         cos, sin = rope_cache(T, self.hd, x.device, x.dtype)
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=self._mask(T, x.device))
+        if self.window is None:
+            # is_causal keeps the fused flash/mem-efficient kernel; passing an
+            # explicit bool mask silently drops SDPA to the math backend.
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            y = F.scaled_dot_product_attention(q, k, v,
+                                               attn_mask=self._mask(T, x.device))
         return self.o(y.transpose(1, 2).reshape(B, T, D))
 
 
@@ -281,9 +293,9 @@ class PatternSeparatedMemory(nn.Module):
         U = [torch.zeros(B, self.M, device=dev, dtype=torch.float32)
              for _ in range(self.C)]
         decay = torch.sigmoid(self.log_decay).float()
-        if modul is not None:                     # noradrenaline: flush rate
-            pass                                  # applied per chunk below
 
+        wscale = [torch.ones((), device=dev, dtype=torch.float32)
+                  for _ in range(self.C)]
         reads = [torch.empty(B, T, self.d_v, device=dev, dtype=torch.float32)
                  for _ in range(self.C)]
         match = torch.empty(B, T, self.C, device=dev, dtype=torch.float32)
@@ -299,24 +311,26 @@ class PatternSeparatedMemory(nn.Module):
 
                 rows = Vf.index_select(0, flat).view(B, Ck, self.k, self.d_v)
                 use = Uf.index_select(0, flat).view(B, Ck, self.k)
-                m = (w * use).sum(-1)                                # match strength
-                r = (w.unsqueeze(-1) * rows).sum(-2) / (m.unsqueeze(-1) + 1e-4)
+                # rows and use both carry wscale, so the ratio is exactly
+                # scale-invariant provided eps is scaled too. match strength is
+                # then de-scaled to keep compartment competition comparable.
+                m_raw = (w * use).sum(-1)
+                r = ((w.unsqueeze(-1) * rows).sum(-2)
+                     / (m_raw.unsqueeze(-1) + 1e-4 * wscale[i]))
                 reads[i][:, sl] = r
-                match[:, sl, i] = m
+                match[:, sl, i] = m_raw / wscale[i]
 
                 # ---- delta-rule write, against the chunk-start state ----
                 err = v[:, sl] - r                                   # (B,Ck,d_v)
-                g = gamma[:, sl].unsqueeze(-1)                       # (B,Ck,1)
+                g = gamma[:, sl].unsqueeze(-1) * wscale[i]           # (B,Ck,1)
                 upd = (g * w).unsqueeze(-1) * err.unsqueeze(-2)      # (B,Ck,k,d_v)
                 Vf.index_add_(0, flat, upd.reshape(-1, self.d_v))
                 Uf.index_add_(0, flat, (g * w).reshape(-1))
 
                 lam = decay[i] ** Ck
-                if modul is not None:
-                    lam = lam * modul[:, sl, 2].mean(1).view(B, 1, 1)
-                    V[i] = V[i] * lam; U[i] = U[i] * lam.squeeze(-1)
-                else:
-                    V[i] = V[i] * lam; U[i] = U[i] * lam
+                if modul is not None:                 # noradrenaline: flush rate
+                    lam = lam * modul[:, sl, 2].mean(1).mean()
+                wscale[i] = wscale[i] / lam.clamp(min=1e-3)
 
         w_cmp = torch.softmax(self.match_scale * match + self.priority, -1)
         gate = torch.sigmoid(self.read_gate(x)).float()

@@ -18,7 +18,14 @@ import torch.nn.functional as F
 from mixers import (RMSNorm, Attention, LinearRecurrentMixer,
                     PatternSeparatedMemory, ShortTermDepression, Neuromodulators)
 
-MEMORY_SLOTS = (2, 5, 8, 11)          # 0-indexed
+def memory_slots(n_layers, n_slots=4):
+    """Evenly spaced memory slots, last block always one. Adapts to depth."""
+    step = max(n_layers // n_slots, 1)
+    return tuple(sorted({min(n_layers - 1, (i + 1) * step - 1)
+                         for i in range(n_slots)}))
+
+
+MEMORY_SLOTS = memory_slots(12)       # module-level default; tests override
 
 
 class SwiGLU(nn.Module):
@@ -72,11 +79,12 @@ class Model(nn.Module):
         super().__init__()
         self.cfg = cfg
         d, L = cfg["d_model"], cfg["n_layers"]
+        self.slots = memory_slots(L) if MEMORY_SLOTS == memory_slots(12) else MEMORY_SLOTS
         self.emb = nn.Embedding(vocab, d)
         self.blocks = nn.ModuleList()
         self.any_memory = False
         for i in range(L):
-            if i in MEMORY_SLOTS:
+            if i in self.slots:
                 mixer, is_mem = build_mixer(memory_mixer, cfg)
             else:
                 mixer, is_mem = build_mixer("sliding", cfg)
@@ -120,7 +128,7 @@ class Model(nn.Module):
     def param_report(self):
         total = sum(p.numel() for p in self.parameters())
         emb = self.emb.weight.numel()
-        mixer = sum(p.numel() for i in MEMORY_SLOTS
+        mixer = sum(p.numel() for i in self.slots
                     for p in self.blocks[i].mixer.parameters())
         return {"total": total, "non_embedding": total - emb,
                 "memory_slot_mixers": mixer}

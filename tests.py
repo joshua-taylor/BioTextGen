@@ -10,7 +10,7 @@ strictly causal. These tests check both.
 import torch
 import torch.nn.functional as F
 
-from bench import DEFAULT_CFG
+from bench import DEFAULT_CFG, SIZES
 import model as M
 from mixers import _chunked_linear_recurrence
 
@@ -102,19 +102,64 @@ def test_address_separation():
         prev = ov
 
 
+def test_decay_equivalence():
+    """
+    PSM folds uniform row decay into the write scale instead of rescaling the
+    state, which stops autograd saving a copy of V per chunk. The two forms
+    must be numerically identical.
+    """
+    torch.manual_seed(0)
+    B, Mrows, dv, k, Ck, N = 2, 64, 8, 4, 4, 6
+    lam = torch.tensor(0.93)
+    idx = torch.randint(0, Mrows, (N, B, Ck, k))
+    w = torch.rand(N, B, Ck, k); w = w / w.sum(-1, keepdim=True)
+    upd = torch.randn(N, B, Ck, k, dv)
+
+    def run(fold):
+        V = torch.zeros(B, Mrows, dv); U = torch.zeros(B, Mrows)
+        ws = torch.ones(()); reads = []
+        off = torch.arange(B)[:, None, None] * Mrows
+        for n in range(N):
+            flat = (idx[n] + off).reshape(-1)
+            Vf, Uf = V.reshape(B * Mrows, dv), U.reshape(B * Mrows)
+            rows = Vf.index_select(0, flat).view(B, Ck, k, dv)
+            use = Uf.index_select(0, flat).view(B, Ck, k)
+            m_raw = (w[n] * use).sum(-1)
+            reads.append((w[n].unsqueeze(-1) * rows).sum(-2)
+                         / (m_raw.unsqueeze(-1) + 1e-4 * (ws if fold else 1.0)))
+            g = ws if fold else 1.0
+            Vf.index_add_(0, flat, (g * (w[n].unsqueeze(-1) * upd[n])).reshape(-1, dv))
+            Uf.index_add_(0, flat, (g * w[n]).reshape(-1))
+            if fold:
+                ws = ws / lam
+            else:
+                V = V * lam; U = U * lam
+        return torch.stack(reads)
+
+    err = (run(False) - run(True)).abs().max().item()
+    assert err < 1e-4, f"write-scale decay != state decay ({err})"
+    print(f"  write-scale decay == state decay   max abs err {err:.2e}")
+
+
 def test_param_parity():
     """Non-embedding parameter counts must be within 5% across arms."""
-    cfg = dict(DEFAULT_CFG)
-    M.MEMORY_SLOTS = (2, 5, 8, 11)
-    counts = {}
-    for mix in ("sliding", "attention", "gla", "deltanet", "psm"):
-        counts[mix] = M.Model(8192, memory_mixer=mix,
-                              cfg=cfg).param_report()["non_embedding"]
+    for size in ("small", "base"):
+        preset = dict(SIZES[size]); vocab = preset.pop("vocab")
+        cfg = dict(DEFAULT_CFG); cfg.update(preset)
+        M.MEMORY_SLOTS = M.memory_slots(cfg["n_layers"])
+        counts = {}
+        for mix in ("sliding", "attention", "gla", "deltanet", "psm"):
+            counts[mix] = M.Model(vocab, memory_mixer=mix,
+                                  cfg=cfg).param_report()["non_embedding"]
+        _check_parity(size, counts)
+
+
+def _check_parity(size, counts):
     base = max(counts.values())
     for mix, c in counts.items():
         gap = abs(c - base) / base
-        print(f"  {mix:10s} non-emb {c:,}  ({gap*100:+.2f}% vs largest)")
-        assert gap < 0.05, f"{mix} is {gap*100:.1f}% off parity"
+        print(f"  [{size}] {mix:10s} non-emb {c:,}  ({gap*100:+.2f}% vs largest)")
+        assert gap < 0.05, f"{size}/{mix} is {gap*100:.1f}% off parity"
 
 
 if __name__ == "__main__":
@@ -124,6 +169,8 @@ if __name__ == "__main__":
     test_causality()
     print("\n[3] address pattern separation")
     test_address_separation()
-    print("\n[4] parameter parity")
+    print("\n[4] decay refactor equivalence")
+    test_decay_equivalence()
+    print("\n[5] parameter parity")
     test_param_parity()
     print("\nall tests passed")

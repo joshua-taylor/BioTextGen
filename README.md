@@ -154,14 +154,43 @@ machinery is not earning its complexity.
 | `bench.py` | Training, evaluation, throughput, results table |
 | `tests.py` | Correctness: chunked math, causality, separation, parity |
 
-## Config
+## Config and size presets
 
-Defaults: 12 blocks, `d_model=384`, 6 heads, seq 512, batch 16, BPE vocab
-8192, AdamW, lr 1e-3, cosine, 2000 steps. ~24M parameters. Tuned to fit a
-Kaggle T4; `--precision` defaults to bf16 where supported and fp16 otherwise.
+`--size` picks a preset; `small` is the default and is the right choice for
+screening.
 
-Memory state is `M × d_v × C` per memory block per sequence = 8281 × 128 × 4
-floats. Reduce `d_v` first if you hit VRAM limits, `m_half` second.
+| preset | d_model | layers | heads | d_v | M rows | k | vocab | non-emb params |
+|---|---|---|---|---|---|---|---|---|
+| `tiny` | 192 | 6 | 3 | 48 | 2025 | 16 | 2048 | ~2.4M |
+| `small` | 256 | 8 | 4 | 64 | 4096 | 16 | 4096 | ~6.5M |
+| `base` | 384 | 12 | 6 | 128 | 8281 | 32 | 8192 | ~21.5M |
+
+Memory slots are placed evenly and adapt to depth automatically. AdamW, lr
+1e-3, cosine, 2000 steps by default; `--precision` is bf16 where supported,
+fp16 otherwise. Peak GPU memory is reported per arm.
+
+### If you hit OOM
+
+Reduce in this order: `d_v`, then `m_half` (M = m_half²), then `--batch-size`.
+PSM state is `B × M × d_v × 4 bytes` per compartment per memory block. At
+`base` with batch 16 that is 68 MB × 4 compartments × 4 blocks = 1.1 GB of
+live state — fine on its own, but see the note below on why it used to be 8×
+worse.
+
+### Two performance notes worth knowing
+
+**Decay is folded into the write scale, not applied to the state.** Scaling
+`V` by a uniform decay at every chunk boundary made autograd save a full copy
+of `V` per chunk — 8.7 GB at `base`, which is what caused the original OOM.
+Because reads are normalised by row usage, which carries the same scale,
+multiplying new writes by `λ⁻ⁿ` is exactly equivalent and touches nothing.
+`tests.py` checks the two forms agree to ~5e-7.
+
+**Full attention uses `is_causal`, not an explicit mask.** Passing a boolean
+`attn_mask` to `scaled_dot_product_attention` silently drops it to the math
+backend. Sliding-window still needs a mask, so its throughput is not directly
+comparable to full attention's — that is a kernel artefact, not a mechanism
+result.
 
 ## Data sources
 

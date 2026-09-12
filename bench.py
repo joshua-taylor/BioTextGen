@@ -23,10 +23,18 @@ from data import get_data, Batcher
 from model import Model
 
 
+SIZES = {
+    # name:   d_model n_layers n_heads  d_a d_v m_half  k   vocab
+    "tiny":  dict(d_model=192, n_layers=6,  n_heads=3, d_a=128, d_v=48,
+                  m_half=45, k=16, vocab=2048),
+    "small": dict(d_model=256, n_layers=8,  n_heads=4, d_a=192, d_v=64,
+                  m_half=64, k=16, vocab=4096),
+    "base":  dict(d_model=384, n_layers=12, n_heads=6, d_a=256, d_v=128,
+                  m_half=91, k=32, vocab=8192),
+}
+
 DEFAULT_CFG = dict(
-    d_model=384, n_layers=12, n_heads=6, window=64, chunk=64,
-    d_a=256, d_v=128, m_half=91, k=32, orders=(1, 2, 4, 8),
-    surprise_gate=True,
+    window=64, chunk=64, orders=(1, 2, 4, 8), surprise_gate=True,
 )
 
 ARMS = {
@@ -65,7 +73,7 @@ def evaluate(model, batcher, n_batches, device, amp_dtype):
 def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
     mixer, depression, modulators = spec
     set_seed(args.seed)
-    cfg = dict(DEFAULT_CFG)
+    cfg = args.model_cfg
     model = Model(vocab, memory_mixer=mixer, cfg=cfg,
                   use_depression=depression, use_modulators=modulators).to(device)
     pr = model.param_report()
@@ -73,6 +81,8 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
           f"non-emb {pr['non_embedding']:,} memory-slot {pr['memory_slot_mixers']:,}",
           flush=True)
 
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95),
                             weight_decay=0.1)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(
@@ -107,10 +117,13 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
             t_train += dt; tok_train += y.numel()
 
         with torch.no_grad():                          # surprise for next step
-            p = torch.log_softmax(logits.float(), -1)
-            nll = -p.gather(-1, y.unsqueeze(-1)).squeeze(-1)
+            # cross_entropy(reduction='none') avoids materialising a full
+            # (B,T,V) fp32 log_softmax -- that was 268 MB per step at base size
+            nll = torch.nn.functional.cross_entropy(
+                logits.detach().view(-1, logits.size(-1)).float(),
+                y.reshape(-1), reduction="none").view_as(y)
             z = (nll - nll.mean()) / (nll.std() + 1e-6)
-            prev_nll = torch.sigmoid(z).detach()
+            prev_nll = torch.sigmoid(z)
 
         hist.append(loss.item())
         if (step + 1) % args.log_every == 0 or step == 0:
@@ -139,8 +152,10 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
         torch.cuda.synchronize()
     infer_tps = n / (time.perf_counter() - t0)
 
+    peak = (torch.cuda.max_memory_allocated() / 1e9
+            if device.type == "cuda" else 0.0)
     res = {
-        "arm": name, "mixer": mixer, "depression": depression,
+        "arm": name, "peak_mem_gb": peak, "mixer": mixer, "depression": depression,
         "modulators": modulators, "params": pr,
         "train_loss": train_loss, "val_loss": val_loss,
         "train_ppl": math.exp(min(train_loss, 20)),
@@ -150,7 +165,8 @@ def run_arm(name, spec, train_ids, val_ids, vocab, args, device, amp_dtype):
         "final_train_batch_loss": float(np.mean(hist[-50:])),
     }
     print(f"  -> train ppl {res['train_ppl']:.2f}  val ppl {res['val_ppl']:.2f}"
-          f"  {res['train_tokens_per_sec']:,.0f} tok/s train", flush=True)
+          f"  {res['train_tokens_per_sec']:,.0f} tok/s train"
+          f"  peak {peak:.2f} GB", flush=True)
     del model, opt
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -172,7 +188,9 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--train-chars", type=int, default=30_000_000)
     p.add_argument("--val-chars", type=int, default=1_000_000)
-    p.add_argument("--vocab-size", type=int, default=8192)
+    p.add_argument("--size", default="small", choices=list(SIZES))
+    p.add_argument("--vocab-size", type=int, default=0,
+                   help="0 = use the size preset's vocab")
     p.add_argument("--precision", default="auto", choices=["auto", "fp16", "bf16", "fp32"])
     p.add_argument("--out", default="results.json")
     p.add_argument("--allow-cpu", action="store_true",
@@ -198,9 +216,16 @@ def main():
     if device.type == "cuda":
         print(f"  {torch.cuda.get_device_name(0)}")
 
-    print("\n[data]")
+    preset = dict(SIZES[args.size])
+    vocab_size = args.vocab_size or preset.pop("vocab")
+    preset.pop("vocab", None)
+    args.model_cfg = dict(DEFAULT_CFG); args.model_cfg.update(preset)
+    print(f"\n[size] {args.size}: " +
+          "  ".join(f"{k}={v}" for k, v in preset.items()), flush=True)
+
+    print("\n[data]", flush=True)
     train_ids, val_ids, vocab = get_data(args.train_chars, args.val_chars,
-                                         args.vocab_size)
+                                         vocab_size)
 
     names = [a.strip() for a in args.arms.split(",") if a.strip()]
     for n in names:
@@ -215,21 +240,23 @@ def main():
         results.append(run_arm(n, ARMS[n], train_ids, val_ids, vocab,
                                args, device, amp))
         Path(args.out).write_text(json.dumps(
-            {"config": vars(args), "model_cfg": {k: list(v) if isinstance(v, tuple)
-                                                 else v for k, v in DEFAULT_CFG.items()},
+            {"config": {k: v for k, v in vars(args).items() if k != "model_cfg"},
+             "model_cfg": {k: list(v) if isinstance(v, tuple) else v
+                           for k, v in args.model_cfg.items()},
              "vocab": vocab, "results": results}, indent=2))
 
     results.sort(key=lambda r: r["val_ppl"])
     ref = next((r for r in results if r["arm"] == "deltanet"), None)
-    print("\n" + "=" * 82)
+    print("\n" + "=" * 91)
     print(f"{'arm':18s} {'train ppl':>10s} {'val ppl':>10s} {'val nats':>9s} "
-          f"{'tok/s tr':>10s} {'tok/s inf':>10s} {'non-emb par':>12s}")
-    print("-" * 82)
+          f"{'tok/s tr':>10s} {'tok/s inf':>10s} {'peak GB':>8s} {'non-emb par':>12s}")
+    print("-" * 91)
     for r in results:
         print(f"{r['arm']:18s} {r['train_ppl']:10.2f} {r['val_ppl']:10.2f} "
               f"{r['val_loss']:9.4f} {r['train_tokens_per_sec']:10,.0f} "
-              f"{r['infer_tokens_per_sec']:10,.0f} {r['params']['non_embedding']:12,}")
-    print("=" * 82)
+              f"{r['infer_tokens_per_sec']:10,.0f} {r.get('peak_mem_gb',0):8.2f} "
+              f"{r['params']['non_embedding']:12,}")
+    print("=" * 91)
 
     base = max(r["params"]["non_embedding"] for r in results)
     for r in results:
