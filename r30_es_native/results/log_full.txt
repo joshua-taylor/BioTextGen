@@ -1,0 +1,5 @@
+jmem hard base (1000, 1024000, 130.1, np.float64(2.0943), np.float64(1.7306), np.float64(2.1305))
+jmem hard base (2000, 2048000, 259.1, np.float64(1.9388), np.float64(1.6712), np.float64(1.9654))
+jmem hard base (3000, 3072000, 389.3, np.float64(1.8945), np.float64(1.652), np.float64(1.9187))
+jmem hard base (4000, 4096000, 517.7, np.float64(1.8435), np.float64(1.6428), np.float64(1.8635))
+jmem hard base (5000, 5120000, 647.5, np.float64(1.8253), np.float64(1.6467), np.float64(1.8432))

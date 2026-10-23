@@ -1,0 +1,8 @@
+mix-none {'mixer': 'none', 'nh': 1, 'steps': 5000} (5000, 5120000, 531.1, np.float64(1.9843))
+mix-hard {'mixer': 'hard', 'nh': 1, 'steps': 5000} (5000, 5120000, 563.4, np.float64(1.94))
+mix-soft {'mixer': 'soft', 'nh': 1, 'steps': 5000} (5000, 5120000, 596.4, np.float64(1.9784))
+mix-hardc {'mixer': 'hardc', 'steps': 5000} (5000, 5120000, 930.0, np.float64(1.9901))
+mix-hardq {'mixer': 'hardq', 'nh': 1, 'steps': 5000} (5000, 5120000, 741.9, np.float64(1.938))
+tfm-d64L2 {'d': 64, 'L': 2, 'T': 256, 'B': 20, 'steps': 1000, 'lr': 0.003, 'nparam': 121152} (1000, 5120000, 298.2, np.float64(2.662))
+mix-soft4 {'mixer': 'soft', 'nh': 4, 'steps': 5000} (5000, 5120000, 778.2, np.float64(1.971))
+tfm-d128L4 {'d': 128, 'L': 4, 'T': 256, 'B': 20, 'steps': 1000, 'lr': 0.002, 'nparam': 832640} (1000, 5120000, 595.0, np.float64(2.282))

@@ -1,0 +1,8 @@
+T1024-soft1 {'mixer': 'soft', 'nh': 1, 'steps': 5000, 'T': 1024, 'nseq': 1, 'evals': 5} (5000, 5120000, 635.2, np.float64(1.9728), np.float64(2.1259), np.float64(1.9576))
+T1024-hardr {'mixer': 'hardr', 'nh': 1, 'steps': 5000, 'T': 1024, 'nseq': 1, 'evals': 5} (5000, 5120000, 1136.5, np.float64(1.8766), np.float64(1.6808), np.float64(1.8961))
+T1024-hard {'mixer': 'hard', 'nh': 1, 'steps': 5000, 'T': 1024, 'nseq': 1, 'evals': 5} (5000, 5120000, 671.7, np.float64(1.8697), np.float64(1.666), np.float64(1.89))
+T1024-none {'mixer': 'none', 'nh': 1, 'steps': 5000, 'T': 1024, 'nseq': 1, 'evals': 5} (5000, 5120000, 520.0, np.float64(1.9895), np.float64(2.1832), np.float64(1.9702))
+tfm-d64L2-B4 {'d': 64, 'L': 2, 'T': 256, 'B': 4, 'steps': 5000, 'lr': 0.003, 'nparam': 121152} (5000, 5120000, 285.7, np.float64(2.3647))
+T1024-soft4 {'mixer': 'soft', 'nh': 4, 'steps': 5000, 'T': 1024, 'nseq': 1, 'evals': 5} (5000, 5120000, 1075.8, np.float64(1.9813), np.float64(2.1892), np.float64(1.9606))
+tfm-d128L4-B4 {'d': 128, 'L': 4, 'T': 256, 'B': 4, 'steps': 5000, 'lr': 0.002, 'nparam': 832640} (5000, 5120000, 996.4, np.float64(2.1215))
+tfm-d128L4-T1024 {'d': 128, 'L': 4, 'T': 1024, 'B': 1, 'steps': 5000, 'lr': 0.002, 'nparam': 930944} (5000, 5120000, 1598.7, np.float64(3.2898))
