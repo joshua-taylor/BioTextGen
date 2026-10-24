@@ -28,3 +28,16 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 | `notes.md` | Working notes with every number |
 
 `results/` holds the raw `res_*.jsonl` and logs.
+
+## Round 31 additions (fast bench)
+| File | What |
+|---|---|
+| `sbdata.py` | precomputed feature pool (run once: `python sbdata.py`; long validation stream built in round 31 notes) |
+| `sb.py`, `sb2.py` | fast numpy+numba sparse + hard-lookup model with exact local credit; options for swap trials, neurogenesis, homeostasis, boosting, exploration, Hebbian learning, novelty-gated memory, keyed LSH memories, pair index, corpus/long-document evaluation |
+| `pairmem.py` | pair-of-top-units index for long memories |
+| `evo2.py` | structure evolution over the full design space |
+| `e_prefill.py`, `e_long_fixed.py` | corpus-memory and fixed-window long-document memory tests |
+| `check_sb2.py` | finite-difference check of every update path |
+| `round31.md` | write-up |
+
+Design D (recommended): `sb2.run(feats=EVO+[["ng",4]], keys=[[["wd"],["pw"]], [["c",i] for i in range(1,13)]], topm=2, lm={"O":2.0}, horizon=32768, cap=512)`.

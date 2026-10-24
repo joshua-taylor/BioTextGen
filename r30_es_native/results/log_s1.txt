@@ -1,0 +1,8 @@
+base {'seed': 0, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.2154), 'dead_frac': 0.0} (800, 819200, 115.1, np.float64(2.2474), np.float64(1.9461), np.float64(2.2895))
+evo {'seed': 0, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.0633), 'dead_frac': 0.0} (800, 819200, 121.2, np.float64(2.0798), np.float64(1.8012), np.float64(2.1187))
+base {'seed': 1, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.1832), 'dead_frac': 0.0} (800, 819200, 117.7, np.float64(2.249), np.float64(1.9549), np.float64(2.2901))
+evo {'seed': 1, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.0368), 'dead_frac': 0.0} (800, 819200, 121.2, np.float64(2.0872), np.float64(1.8221), np.float64(2.1242))
+base-nolookup {'lookup': 0, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.3263), 'dead_frac': 0.0} (800, 819200, 118.3, np.float64(2.4242), np.float64(2.6264), np.float64(2.3959))
+evo-nolookup {'lookup': 0, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.0819), 'dead_frac': 0.0} (800, 819200, 133.5, np.float64(2.1134), np.float64(1.9031), np.float64(2.1427))
+evo-L1 {'L': 1, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.1197), 'dead_frac': 0.0} (800, 819200, 71.2, np.float64(2.1295), np.float64(1.8317), np.float64(2.1711))
+evo-dead-check {'seed': 2, 'stats': {'swap_tried': 0, 'swap_good': 0, 'regrown': 0}, 'train_bpc': np.float64(2.0402), 'dead_frac': 0.0} (800, 819200, 120.6, np.float64(2.0822), np.float64(1.7898), np.float64(2.1231))

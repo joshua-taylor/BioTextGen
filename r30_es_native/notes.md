@@ -92,3 +92,42 @@ Best genome on full train data, 5000 steps T1024: 1.689 overall, copyable 1.493,
 
 ## E9 transformer tuning (d128 L4, B4 x 256, 5000 steps = 5.1M chars)
 lr 5e-4 2.311 | 1e-3 2.075 | 2e-3 2.122 | 4e-3 2.270 ; B8 lr2e-3 2.143 ; best lr on full train stream: 2.055
+
+# Round 31 (24 Oct): fast bench sb.py / sb2.py (numpy+numba, exact closed-form credit = forward-only; 0.8M chars, 2 streams x 512)
+S1 calibration: base 2.2474/2.2490 (2 seeds); evo 2.0798/2.0872/2.0822 (3 seeds; mean 2.083); base-nolookup 2.424; evo-nolookup 2.113; evo-L1 2.130
+  -> lookup worth 0.18 (base) / 0.03 (evo, which already has exact-copy features); seed noise ~0.005-0.02
+S2 selection credit at kw32/H1024 (eff units ~430-700): swap4 2.0957/2.0756; swap8 2.0965; swap4 lr0.3 2.0904; ste8 2.0886/2.0707;
+   regrow thr1 2.0905; regrow thr5 2.0849  -> all within noise: NO GAIN at moderate sparsity. swap 'good' fraction ~50% (noise-like)
+S3 context mechanisms (evo feats, sb2): evo 2.0934 | rv (retrieve successor fingerprint) 2.0951 | top2 2.0801 | top4 2.0861 | lk2 (2nd lookup on layer-2 code) 2.0753
+  horizon (cap): 256(64) 2.1087 | 1024(128) 2.0934 | 8192(256) 2.0432 | 32768(512) 2.0175  <- MEMORY LENGTH IS THE LEVER (-0.076 from 1k to 32k)
+  'other' (not copyable within 1024): 2.132 -> 2.056 ; val stream is only 40k chars, so 32k ~ all of it.
+  effective indexed memory ~ cap * H / kw ; cost per query ~ kw * cap  =>  cost for N positions ~ N kw^2 / H : extreme sparsity makes long memory cheap.
+S4 sparsity (L=1, evo feats): H1024 k32 2.130 (eff 328) | H1024 k8 2.258 (eff 76, dead 35%) | H4096 k32 2.135 (dead 25%) | H4096 k8 2.287 (dead 55%)
+  | H4096 k4 2.453 | H16384 k16 2.185 (dead 61%) | H16384 k8 2.269 (dead 74%) | H16384 k4 2.471
+  -> active count kw dominates; extra width is wasted (units die). Utilisation is the bottleneck at high sparsity.
+S5 utilisation fixes at L1 H4096 k8 (base 2.287, dead 55%, eff 78): swap4 2.393 (worse) | regrow 2.303 | homeo(bias,0.01) 2.918 (much worse: shifts activations) | homeo+regrow 4.05
+  -> rule 14: never pkill/pgrep -f a pattern that appears in your own command line (killed the shell twice; waiter loops matched themselves).
+S6 gentler utilisation fixes at L1 H4096 k8 (base 2.287): boost0.1 2.266 | boost0.3 2.259 (eff 78->191) | boost1 2.292 (eff 1696!) | explore0.3 2.270 | explore1 2.347
+  | boost0.3+explore0.3 2.253 (best, -0.034) | homeo5e-4 2.365 ; mainline L2 k32: boost0.3 2.095, explore0.3 2.083 (no effect)
+  -> utilisation fixable but small gains; kw (units per prediction) is the capacity limit. Extreme sparsity costs accuracy.
+Corpus memory (e_prefill; trained on first half of train, prefill from unseen end of train, cap limits index to ~65k moments):
+  h1k-trained: 0 2.053 | 100k 2.013 | 500k 2.006 | 2M 2.004 ; h32k-trained: 1.994 | 1.994 | 1.980 | 1.978  (gains on 'other' chars)
+Pair index (pairmem.py): bucket = pair of top-8 units, 2^18 buckets x 64; ~same quality as unit index at 100k history, 2x faster.
+S7: hebbian competitive learning HURTS: L1 H4096 k8 hebb0.01 2.431, 0.05 2.585; mainline hebb0.01 2.147 (vs 2.083)
+    novelty-gated writes: cap128 h32k 2.0786/2.0786/2.0759 (wt 2/0.95/0.85); cap512 2.0175/2.0243/2.0175 -> no gain
+    index capacity matters: h32k cap128 2.079 vs cap512 2.018
+S8 keyed lookups (fixed random LSH key over a chosen feature subset; evo feats, h32k cap512; base 2.0175):
+    word key (wd,pw) 1.9925 | 12-char key 1.9886 | n-gram key (ng4,ng6) 1.9870 | prev-word only 2.0221 | word + 12-char 1.9737 (-0.044)
+    -> what the memory is keyed on is a discrete design choice; two extra keys stack.
+Long-document memory, FIXED scoring window (val chars 1,000,448..1,040,448), history = preceding val text read write-only (evo h32k-trained):
+  unit index: 0 2.0895 | 30k 2.0210 | 100k 2.0068 | 300k 2.0039 | 1M 1.9969 (292 s)
+  pair index: 0 2.0621 | 30k 2.0513 | 100k 2.0535 | 300k 2.0534 | 1M 2.0280 (36 s)
+  -> -0.093 bits from reading 1M chars of earlier text (no learning). Pair index 8x faster, loses ~0.03 recall at long range.
+  (earlier e_long rows used different windows per history -> discarded)
+FD check of sb2 local credit (keys+lookup+2 layers, check_sb2.py): 47/48 random weights match the measured loss slope within float32
+  resolution (6e-5); the one mismatch is a nudge that flips the winner set (selection jump), as expected.
+evo3 (structure evolution, 300-step fitness, 42 evals, stopped after stall): 2.252 (start, evo h32k) -> gen1 2.210 (top2 + output lr x2) -> gen2 2.180 (+ng4 input); runners-up: word key 2.185-2.213
+S9 combination at full budget (0.8M chars, h32k cap512):
+  A evo-h32k 2.0175 / 2.0035 (2 seeds) | B +ng4 1.9754 | C +ng4+2 keys(word,12c) 1.9239 | D C+top2+lmO2 1.9198 / 1.8968 (mean 1.908, -0.102 vs A)
+  E D with 131k reach (cap1024) 1.9247 (val window only 40k -> can't show >32k here)
+F D trained 2400 steps (2.46M chars): 2.040 1.930 1.828 1.791 1.761 1.769 (copy 1.629 other 1.789)

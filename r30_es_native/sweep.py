@@ -3,7 +3,7 @@ import sys, json, os, itertools
 from multiprocessing import Pool
 os.environ.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
 def job(cfg):
-    import importlib; mod = importlib.import_module(cfg.pop("_mod", "e1"))
+    import importlib; mod = importlib.import_module(cfg.pop("_mod", "e1")); cfg.pop("log", None)
     h = mod.run(log=False, **cfg)
     if isinstance(h, dict): return dict(cfg, **h)
     return dict(cfg, hist=h)

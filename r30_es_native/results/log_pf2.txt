@@ -1,0 +1,4 @@
+{"tag": "h32k", "train_horizon": 32768, "prefill": 0, "cap": 512, "bpc": 1.9938, "copy": 1.7264, "other": 2.0311, "sec": 6.9}
+{"tag": "h32k", "train_horizon": 32768, "prefill": 100000, "cap": 512, "bpc": 1.9942, "copy": 1.7267, "other": 2.0316, "sec": 9.8}
+{"tag": "h32k", "train_horizon": 32768, "prefill": 500000, "cap": 1024, "bpc": 1.9795, "copy": 1.7274, "other": 2.0147, "sec": 22.4}
+{"tag": "h32k", "train_horizon": 32768, "prefill": 2000000, "cap": 2048, "bpc": 1.9777, "copy": 1.7285, "other": 2.0125, "sec": 56.1}

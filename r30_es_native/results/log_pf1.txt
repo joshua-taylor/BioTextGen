@@ -1,0 +1,4 @@
+{"tag": "h1k", "train_horizon": 1024, "prefill": 0, "cap": 128, "bpc": 2.0534, "copy": 1.7697, "other": 2.0931, "sec": 2.3}
+{"tag": "h1k", "train_horizon": 1024, "prefill": 100000, "cap": 512, "bpc": 2.0132, "copy": 1.7583, "other": 2.0488, "sec": 10.1}
+{"tag": "h1k", "train_horizon": 1024, "prefill": 500000, "cap": 1024, "bpc": 2.0058, "copy": 1.7584, "other": 2.0404, "sec": 22.7}
+{"tag": "h1k", "train_horizon": 1024, "prefill": 2000000, "cap": 2048, "bpc": 2.0039, "copy": 1.7635, "other": 2.0375, "sec": 56.9}
